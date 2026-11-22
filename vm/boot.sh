@@ -20,11 +20,40 @@ st() { echo "$(( $(date +%s) - T0 ))s $(date +%T) $*" >> $R/timeline.txt; }
 seen() { grep -qE "$1" $R/timeline.txt; }
 hdr() { echo "Authorization: Bearer $(cat /content/secrets/key)"; }
 st "boot start ctx=$CTX ubatch=$UBATCH cache=$MOE_CACHE_MIB dyn=$DYN images=$MMPROJ draft=$DRAFT uncensored=$UNCENSOR"
+VRAM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')
+RAM_GB=$(awk '/MemTotal/ {print int($2/1048576)}' /proc/meminfo)
+DISK_FREE_GB=$(df -BG --output=avail /content | tail -1 | tr -dc '0-9')
+VRAM_MIB=${VRAM_MIB:-0}; RAM_GB=${RAM_GB:-0}; DISK_FREE_GB=${DISK_FREE_GB:-0}
+st "hw vram=${VRAM_MIB}MiB ram=${RAM_GB}GB disk=${DISK_FREE_GB}GB"
+ENGRAM_DIR=$M; VRAM_GUARD=60000; SPLIT_BACKBONE=0; PIN_COLD=1
+if [ "$VRAM_MIB" -ge 90000 ] && [ "$RAM_GB" -ge 180 ]; then
+  st "layout G4 (RAM Engram)"
+elif [ "$VRAM_MIB" -ge 75000 ] && [ "$RAM_GB" -ge 155 ]; then
+  export MOE_CACHE_MIB=53000 DYN=80 DMA=0
+  [ "$CTX" -gt 262144 ] && export CTX=262144
+  ENGRAM_DIR=/content/engram; VRAM_GUARD=45000
+  [ "$DISK_FREE_GB" -lt 115 ] && { st "GUARD: A100-80G needs 115 GB free disk for Engram (have ${DISK_FREE_GB} GB) FAILED"; exit 1; }
+  st "layout A100-80G (disk Engram mmap, cache=${MOE_CACHE_MIB}MiB, ctx=${CTX})"
+elif [ "$VRAM_MIB" -ge 38000 ] && [ "$RAM_GB" -ge 78 ]; then
+  export MOE_CACHE_MIB=17000 DYN=48 DMA=0 DRAFT=0 MMPROJ=0
+  [ "$CTX" -gt 131072 ] && export CTX=131072
+  ENGRAM_DIR=/content/engram; VRAM_GUARD=20000; SPLIT_BACKBONE=1; PIN_COLD=0
+  [ "$DISK_FREE_GB" -lt 195 ] && { st "GUARD: A100-40G needs 195 GB free disk (have ${DISK_FREE_GB} GB) FAILED"; exit 1; }
+  st "layout A100-40G (split disk/RAM + disk Engram mmap, cache=${MOE_CACHE_MIB}MiB, ctx=${CTX})"
+else
+  st "GUARD: unsupported GPU/RAM (${VRAM_MIB}MiB VRAM, ${RAM_GB}GB RAM) FAILED"; exit 1
+fi
 mountpoint -q /mnt/ram || mount -t tmpfs -o size=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1000000 - 6 ))G tmpfs /mnt/ram
-mkdir -p $M
+mkdir -p $M "$ENGRAM_DIR" /content/model_disk
 
 fetch() {  # $1 = backbone|engram|draft
-  python3 $V/jobs.py $1 $M $R/j_$1.json >> $R/fetch.log 2>&1 && python3 $V/pfetch.py $R/j_$1.json --workers $WORKERS --chunk-mb 64 --tag $1 --log $R/fetch.log
+  local dst=$M
+  [ "$1" = "engram" ] && dst=$ENGRAM_DIR
+  python3 $V/jobs.py $1 $dst $R/j_$1.json >> $R/fetch.log 2>&1 || return 1
+  if [ "$1" = "backbone" ] && [ "$SPLIT_BACKBONE" = 1 ]; then
+    python3 -c "import json,os; p='$R/j_backbone.json'; d=json.load(open(p)); [x.update(dest=os.path.join('/content/model_disk',os.path.basename(x['dest']))) for x in d[:3]]; json.dump(d,open(p,'w'))"
+  fi
+  python3 $V/pfetch.py $R/j_$1.json --workers $WORKERS --chunk-mb 64 --tag $1 --log $R/fetch.log
 }
 
 { bash $V/build.sh > $R/llama.log 2>&1 && st "llama.cpp built" || st "llama.cpp build FAILED"; } &
@@ -36,15 +65,20 @@ wait
 seen FAILED && { st "fetch FAILED, stopping"; exit 1; }
 ( for k in $(seq 1 900); do [ -f $R/READY ] && exit 0; a=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
     [ "$a" -lt 1200 ] && { for p in $(pgrep -f "[p]fetch.py"); do kill $p; done; st "GUARD: ${a} MiB RAM available, fetch stopped FAILED"; exit 0; }; sleep 2; done ) &
-for i in 1 2 3 4 5; do ln -sf $M/$NAME-0000$i-of-00006.gguf /content/model/$NAME-0000$i-of-00006.gguf; done
-ln -sf $M/$ENGRAM /content/model/$NAME-00006-of-00006.gguf
-python3 -I -c "import os; f=os.open('$M/$ENGRAM', os.O_WRONLY|os.O_CREAT, 0o644); os.ftruncate(f, 110595290816); os.close(f)"
+if [ "$SPLIT_BACKBONE" = 1 ]; then
+  for i in 1 2 3; do ln -sf /content/model_disk/$NAME-0000$i-of-00006.gguf /content/model/$NAME-0000$i-of-00006.gguf; done
+  for i in 4 5; do ln -sf $M/$NAME-0000$i-of-00006.gguf /content/model/$NAME-0000$i-of-00006.gguf; done
+else
+  for i in 1 2 3 4 5; do ln -sf $M/$NAME-0000$i-of-00006.gguf /content/model/$NAME-0000$i-of-00006.gguf; done
+fi
+ln -sf "$ENGRAM_DIR/$ENGRAM" /content/model/$NAME-00006-of-00006.gguf
+python3 -I -c "import os; f=os.open('$ENGRAM_DIR/$ENGRAM', os.O_WRONLY|os.O_CREAT, 0o644); os.ftruncate(f, 110595290816); os.close(f)"
 for k in 1 2 3 4 5; do  # the sparse Engram needs its real header before the server starts; the table itself is filled after the punch
   curl -sfL --retry 3 ${HF_HDR:+-H @$HF_HDR} -r 0-1048575 -o $R/engram_head.bin "$HF/$ENGRAM" && [ "$(head -c 4 $R/engram_head.bin)" = GGUF ] && break
   sleep 3
 done
 [ "$(head -c 4 $R/engram_head.bin 2>/dev/null)" = GGUF ] || { st "engram header FAILED"; exit 1; }
-dd if=$R/engram_head.bin of=$M/$ENGRAM conv=notrunc status=none
+dd if=$R/engram_head.bin of="$ENGRAM_DIR/$ENGRAM" conv=notrunc status=none
 python3 -I $V/checksizes.py /content/model > $R/sizes.txt 2>&1 && st "sizes ok" || { st "sizes FAILED"; exit 1; }
 if [ "$UNCENSOR" = 1 ]; then
   python3 -I $V/applypatch.py /content/model /content/patch >> $R/patch.log 2>&1 && st "uncensored tensors applied" || { st "patch apply FAILED"; exit 1; }
@@ -59,17 +93,25 @@ done
 VRAM=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
 grep -E "model buffer size|KV buffer size|compute buffer size|MoE cache" $R/server.log > $R/buffers.txt
 # punching a tensor the server still reads from RAM would zero live weights, so check that the weights went to the GPU first
-if [ "$VRAM" -lt 60000 ] || ! grep -q "CUDA0 model buffer size" $R/buffers.txt; then st "GUARD: VRAM ${VRAM} MiB, no CUDA model buffer FAILED"; exit 1; fi
+if [ "$VRAM" -lt "$VRAM_GUARD" ] || ! grep -q "CUDA0 model buffer size" $R/buffers.txt; then st "GUARD: VRAM ${VRAM} MiB (< ${VRAM_GUARD}), no CUDA model buffer FAILED"; exit 1; fi
 [ -s $R/resident.txt ] && grep -q "prefilled" $R/server.log || { st "GUARD: no resident expert list FAILED"; exit 1; }
-PUNCH_FILES="$M/$NAME-0000[2-5]-of-00006.gguf"
+if [ "$SPLIT_BACKBONE" = 1 ]; then
+  PUNCH_FILES="$M/$NAME-0000[4-5]-of-00006.gguf"
+else
+  PUNCH_FILES="$M/$NAME-0000[2-5]-of-00006.gguf"
+fi
 python3 -I $V/punch.py "$CPU_RE" $PUNCH_FILES > $R/punch.txt 2>&1 && st "punched $(cat $R/punch.txt), VRAM ${VRAM} MiB" || { st "punch FAILED"; exit 1; }
 python3 $V/punch.py --experts $R/resident.txt $PUNCH_FILES > $R/punch_res.txt 2>&1 && st "$(cat $R/punch_res.txt)" || { st "resident punch FAILED"; exit 1; }
 if [ "$DRAFT" = 1 ] && [ "$(grep -c 'CUDA0 model buffer size' $R/buffers.txt)" -ge 2 ]; then
   python3 -I $V/punch.py 'NO_CPU_TENSOR=CPU' $M/dspark.gguf > $R/punch_draft.txt 2>&1 && st "draft punched $(cat $R/punch_draft.txt)"
 fi
-python3 $V/punch.py --pin-cold $R/pin_request.tmp $R/resident.txt $PUNCH_FILES > $R/pin.txt 2>&1 && mv $R/pin_request.tmp $R/pin_request
-for k in $(seq 1 600); do grep -q DONE $R/pin_result 2>/dev/null && break; sleep 1; done
-st "pin: $(tail -1 $R/pin_result 2>/dev/null)"
+if [ "$PIN_COLD" = 1 ]; then
+  python3 $V/punch.py --pin-cold $R/pin_request.tmp $R/resident.txt $PUNCH_FILES > $R/pin.txt 2>&1 && mv $R/pin_request.tmp $R/pin_request
+  for k in $(seq 1 600); do grep -q DONE $R/pin_result 2>/dev/null && break; sleep 1; done
+  st "pin: $(tail -1 $R/pin_result 2>/dev/null)"
+else
+  st "pin: skipped (split disk/RAM mode)"
+fi
 fetch engram && st "engram done" || { st "engram FAILED"; exit 1; }
 free -b > $R/free_after_engram.txt
 touch $R/READY

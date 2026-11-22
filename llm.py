@@ -899,17 +899,30 @@ class Manager:
         save_session(s)
         self.sess = s
         log('up: %s, balance %.2f CU, hard stop after %.1f h, idle stop after %.1f min' % (describe(*choice()), bal, MAX_HOURS, IDLE_MIN))
-        for attempt in range(2):
-            rc, out = colab(['new', '-s', NAME, '--gpu', 'G4'], 300)
+        gpu_pref = os.environ.get('LLM_GPU', 'auto').strip().lower()
+        if gpu_pref == 'g4':
+            targets = [('G4', ['new', '-s', NAME, '--gpu', 'G4']),
+                       ('G4', ['new', '-s', NAME, '--gpu', 'G4'])]
+        elif gpu_pref == 'a100':
+            targets = [('A100-HM', ['new', '-s', NAME, '--gpu', 'A100', '--high-mem']),
+                       ('A100-HM', ['new', '-s', NAME, '--gpu', 'A100', '--high-mem'])]
+        else:
+            targets = [('G4', ['new', '-s', NAME, '--gpu', 'G4']),
+                       ('A100-HM', ['new', '-s', NAME, '--gpu', 'A100', '--high-mem'])]
+        alloc_gpu = 'G4'
+        for attempt, (label, cmd) in enumerate(targets):
+            rc, out = colab(cmd, 300)
             if rc == 0 and 'READY' in out:
+                alloc_gpu = label
                 break
-            log('allocation attempt %d failed: %s' % (attempt + 1, out.strip()[-300:]))
+            log('allocation attempt %d (%s) failed: %s' % (attempt + 1, label, out.strip()[-300:]))
             self._check_stop()
         else:
-            raise StartError('no G4 GPU from Colab (none free, or the plan has no compute units for it): ' + out.strip()[-200:])
+            raise StartError('no G4/A100 GPU from Colab (none free, or the plan has no compute units for it): ' + out.strip()[-200:])
+        s['gpu'] = alloc_gpu
         self._stage(s, 'allocated', t0)
-        log('G4 allocated after %.0f s' % s['stages']['allocated'])
-        self.steps.append(('allocated', time.time(), 'G4 GPU allocated'))
+        log('%s allocated after %.0f s' % (alloc_gpu, s['stages']['allocated']))
+        self.steps.append(('allocated', time.time(), '%s GPU allocated' % alloc_gpu))
         bundle = os.path.join(STATE, 'bundle.tgz')
         try:
             build_bundle(bundle)
