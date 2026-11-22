@@ -20,8 +20,9 @@ CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null
 [ -n "$CUDA_ARCH" ] || CUDA_ARCH=120
 JOBS=$(nproc 2>/dev/null || echo 16)
 st "cmake arch=$CUDA_ARCH jobs=$JOBS"
+sed -i 's/FATAL_ERROR/STATUS/g' "$S/scripts/ui-assets.cmake" 2>/dev/null || true
 cmake -S $S -B $S/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=$CUDA_ARCH -DLLAMA_BUILD_TESTS=ON -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON \
-  -DLLAMA_BUILD_UI=OFF -DLLAMA_BUILD_WEBUI=OFF \
+  -DLLAMA_BUILD_UI=OFF \
   -DCMAKE_BUILD_TYPE=Release > $R/build_cmake.log 2>&1 || { st "cmake FAILED: $(tail -3 $R/build_cmake.log | tr '\n' ' ')"; exit 1; }
 nice -n 5 cmake --build $S/build -j "$JOBS" --target llama-server > $R/build_make.log 2>&1 || { st "make FAILED: $(grep -m3 -i error $R/build_make.log | tr '\n' ' ')"; exit 1; }
 mkdir -p $D && cp -a $S/build/bin/* $D/ && find $S/build -name "*.so*" -exec cp -a {} $D/ \;

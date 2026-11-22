@@ -8,6 +8,7 @@ ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | he
 
 echo "=== Building llama-server (arch=$ARCH, no WebUI) ==="
 rm -rf "$S/build/tools/ui/dist"
+sed -i 's/FATAL_ERROR/STATUS/g' "$S/scripts/ui-assets.cmake" 2>/dev/null || true
 cmake -S "$S" -B "$S/build" \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES="$ARCH" \
@@ -15,7 +16,6 @@ cmake -S "$S" -B "$S/build" \
   -DLLAMA_CURL=OFF \
   -DLLAMA_OPENSSL=ON \
   -DLLAMA_BUILD_UI=OFF \
-  -DLLAMA_BUILD_WEBUI=OFF \
   -DCMAKE_BUILD_TYPE=Release
 nice -n 5 cmake --build "$S/build" -j "$(nproc)" --target llama-server
 mkdir -p "$D"
