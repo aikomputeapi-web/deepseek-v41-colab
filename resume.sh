@@ -6,34 +6,53 @@ D=/content/llama/bin
 ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '. ')
 [ -n "$ARCH" ] || ARCH=80
 
-echo "=== Building llama-server (arch=$ARCH, no WebUI) ==="
-rm -rf "$S/build/tools/ui/dist"
-sed -i 's/FATAL_ERROR/STATUS/g' "$S/scripts/ui-assets.cmake" 2>/dev/null || true
-cmake -S "$S" -B "$S/build" \
-  -DGGML_CUDA=ON \
-  -DCMAKE_CUDA_ARCHITECTURES="$ARCH" \
-  -DLLAMA_BUILD_TESTS=ON \
-  -DLLAMA_CURL=OFF \
-  -DLLAMA_OPENSSL=ON \
-  -DLLAMA_BUILD_UI=OFF \
-  -DCMAKE_BUILD_TYPE=Release
-nice -n 5 cmake --build "$S/build" -j "$(nproc)" --target llama-server
-mkdir -p "$D"
-cp -a "$S/build/bin/"* "$D/"
-find "$S/build" -name "*.so*" -exec cp -a {} "$D/" \;
-for l in libcudart.so libcublas.so libcublasLt.so; do
-  cp -a /usr/local/cuda/lib64/$l* "$D/" 2>/dev/null || true
-done
+if [ ! -x "$D/llama-server" ]; then
+  echo "=== Building llama-server (arch=$ARCH, no WebUI) ==="
+  rm -rf "$S/build/tools/ui/dist"
+  sed -i 's/FATAL_ERROR/STATUS/g' "$S/scripts/ui-assets.cmake" 2>/dev/null || true
+  cmake -S "$S" -B "$S/build" \
+    -DGGML_CUDA=ON \
+    -DCMAKE_CUDA_ARCHITECTURES="$ARCH" \
+    -DLLAMA_BUILD_TESTS=ON \
+    -DLLAMA_CURL=OFF \
+    -DLLAMA_OPENSSL=ON \
+    -DLLAMA_BUILD_UI=OFF \
+    -DCMAKE_BUILD_TYPE=Release
+  nice -n 5 cmake --build "$S/build" -j "$(nproc)" --target llama-server
+  mkdir -p "$D"
+  cp -a "$S/build/bin/"* "$D/"
+  find "$S/build" -name "*.so*" -exec cp -a {} "$D/" \;
+  for l in libcudart.so libcublas.so libcublasLt.so; do
+    cp -a /usr/local/cuda/lib64/$l* "$D/" 2>/dev/null || true
+  done
+else
+  echo "=== llama-server already built, skipping compile ==="
+fi
 echo '#!/bin/bash' > /content/vm/build.sh
 chmod +x /content/vm/build.sh
 
+echo "=== Updating /content/vm/boot.sh (A100-40G backbone-only support) ==="
+curl -sL https://raw.githubusercontent.com/aikomputeapi-web/deepseek-v41-colab/main/vm/boot.sh -o /content/vm/boot.sh
+chmod +x /content/vm/boot.sh
+
 echo "=== Booting DeepSeek V4.1 Flash (Abliterated) ==="
 : > /content/res/timeline.txt
-( tail -F /content/res/timeline.txt 2>/dev/null ) &
-TPID=$!
-trap "kill $TPID 2>/dev/null || true" EXIT
-CTX=524288 UBATCH=2048 MMPROJ=1 MOE_CACHE_MIB=70430 DYN=110 DMA=0 DRAFT=1 UNCENSOR=1 WORKERS=64 bash /content/vm/boot.sh
-kill $TPID 2>/dev/null || true
+CTX=524288 UBATCH=2048 MMPROJ=1 MOE_CACHE_MIB=70430 DYN=110 DMA=0 DRAFT=1 UNCENSOR=1 WORKERS=64 bash /content/vm/boot.sh &
+BPID=$!
+SEEN=0
+while kill -0 "$BPID" 2>/dev/null; do
+  LINES=$(wc -l < /content/res/timeline.txt 2>/dev/null || echo 0)
+  if [ "$LINES" -gt "$SEEN" ]; then
+    sed -n "$((SEEN+1)),${LINES}p" /content/res/timeline.txt
+    SEEN=$LINES
+  fi
+  sleep 2
+done
+wait "$BPID"
+RC=$?
+LINES=$(wc -l < /content/res/timeline.txt 2>/dev/null || echo 0)
+[ "$LINES" -gt "$SEEN" ] && sed -n "$((SEEN+1)),${LINES}p" /content/res/timeline.txt
+[ "$RC" -eq 0 ] || { echo "boot.sh failed ($RC)"; tail -n 25 /content/res/server.log /content/res/fetch.log 2>/dev/null; exit "$RC"; }
 
 echo "=== Starting Cloudflare Tunnel ==="
 if ! command -v cloudflared >/dev/null 2>&1; then
