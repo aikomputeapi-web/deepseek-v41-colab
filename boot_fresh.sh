@@ -13,7 +13,9 @@ cp -a /content/deepseek-colab/vm /content/vm
 chmod +x /content/vm/*.sh
 
 mkdir -p /content/secrets /content/res
-if [ ! -s /content/secrets/key ]; then
+if [ -n "${DS41_API_KEY:-}" ]; then
+  printf '%s' "$DS41_API_KEY" > /content/secrets/key
+elif [ ! -s /content/secrets/key ]; then
   python3 -c 'import secrets; print("sk-ds41-" + secrets.token_hex(24))' > /content/secrets/key
 fi
 
@@ -44,12 +46,18 @@ if ! command -v cloudflared >/dev/null 2>&1; then
   chmod +x /usr/local/bin/cloudflared
 fi
 pkill -f 'cloudflared tunnel' 2>/dev/null || true
-nohup cloudflared tunnel --url http://127.0.0.1:18080 --no-autoupdate > /content/res/cloudflared.log 2>&1 &
-for i in $(seq 1 30); do
-  URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /content/res/cloudflared.log 2>/dev/null | head -1)
-  [ -n "$URL" ] && break
-  sleep 1
-done
+if [ -n "${CF_TUNNEL_TOKEN:-}" ]; then
+  nohup cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" --url http://127.0.0.1:18080 > /content/res/cloudflared.log 2>&1 &
+  sleep 4
+  URL="${CF_TUNNEL_URL:-https://ds41.nowrouter.store}"
+else
+  nohup cloudflared tunnel --url http://127.0.0.1:18080 --no-autoupdate > /content/res/cloudflared.log 2>&1 &
+  for i in $(seq 1 30); do
+    URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /content/res/cloudflared.log 2>/dev/null | head -1)
+    [ -n "$URL" ] && break
+    sleep 1
+  done
+fi
 
 echo ""
 echo "============================================================"
