@@ -29,11 +29,11 @@ ENGRAM_DIR=$M; VRAM_GUARD=60000; BACKBONE_ON_DISK=0; SKIP_ENGRAM=0; PIN_COLD=1
 if [ "$VRAM_MIB" -ge 90000 ] && [ "$RAM_GB" -ge 180 ]; then
   st "layout G4 (RAM Engram)"
 elif [ "$VRAM_MIB" -ge 75000 ] && [ "$RAM_GB" -ge 155 ]; then
-  export MOE_CACHE_MIB=53000 DYN=80 DMA=0
+  export MOE_CACHE_MIB=52000 DYN=160 DMA=0
   [ "$CTX" -gt 262144 ] && export CTX=262144
   ENGRAM_DIR=/content/engram; VRAM_GUARD=45000
   [ "$DISK_FREE_GB" -lt 115 ] && { st "GUARD: A100-80G needs 115 GB free disk for Engram (have ${DISK_FREE_GB} GB) FAILED"; exit 1; }
-  st "layout A100-80G (disk Engram mmap, cache=${MOE_CACHE_MIB}MiB, ctx=${CTX})"
+  st "layout A100-80G (disk Engram mmap, cache=${MOE_CACHE_MIB}MiB, dyn=${DYN}, ctx=${CTX})"
 elif [ "$VRAM_MIB" -ge 38000 ] && [ "$RAM_GB" -ge 78 ]; then
   export MOE_CACHE_MIB=17000 DYN=48 DMA=0 DRAFT=0 MMPROJ=0
   [ "$CTX" -gt 131072 ] && export CTX=131072
@@ -111,6 +111,8 @@ else
 fi
 if [ "$SKIP_ENGRAM" = 1 ]; then
   st "engram skipped (sparse mode for A100-40G)"
+elif [ "$(du -BG "$ENGRAM_DIR/$ENGRAM" 2>/dev/null | awk '{print int($1)}')" -ge 100 ]; then
+  st "engram cached on disk"
 else
   fetch engram && st "engram done" || { st "engram FAILED"; exit 1; }
 fi

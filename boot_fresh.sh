@@ -18,6 +18,8 @@ if [ ! -s /content/secrets/key ]; then
 fi
 
 echo "=== Booting DeepSeek V4.1 Flash (Abliterated) (~4 min) ==="
+pkill -f llama-server 2>/dev/null || true
+pkill -f /content/vm/gate.py 2>/dev/null || true
 : > /content/res/timeline.txt
 CTX=524288 UBATCH=2048 MMPROJ=1 MOE_CACHE_MIB=70430 DYN=110 DMA=0 DRAFT=1 UNCENSOR=1 WORKERS=64 bash /content/vm/boot.sh &
 BPID=$!
