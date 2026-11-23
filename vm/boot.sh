@@ -56,8 +56,7 @@ fetch() {  # $1 = backbone|engram|draft
 
 { bash $V/build.sh > $R/llama.log 2>&1 && st "llama.cpp built" || st "llama.cpp build FAILED"; } &
 [ "$UNCENSOR" = 1 ] && { python3 -I $V/mkpatch.py /content/patch > $R/patch.log 2>&1 && st "uncensor patch fetched" || st "uncensor patch FAILED"; } &
-[ "$MMPROJ" = 1 ] && { MMPROJ_FETCH_ONLY=1 timeout 300 [ -f $V/libpin.so ] || gcc -shared -fPIC -O2 $V/pin.c -o $V/libpin.so -ldl -lpthread 2>/dev/null || true
-bash $V/serve.sh > $R/mmproj.log 2>&1 && st "image encoder fetched" || st "image encoder FAILED"; } &
+[ "$MMPROJ" = 1 ] && { MMPROJ_FETCH_ONLY=1 timeout 300 bash $V/serve.sh > $R/mmproj.log 2>&1 && st "image encoder fetched" || st "image encoder FAILED"; } &
 { fetch backbone && st "backbone fetched" || st "backbone FAILED"; } &
 [ "$DRAFT" = 1 ] && { fetch draft && sha256sum $M/dspark.gguf | grep -q "^$DRAFT_SHA" && st "draft fetched" || st "draft FAILED"; } &
 wait
