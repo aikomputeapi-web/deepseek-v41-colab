@@ -56,7 +56,8 @@ fetch() {  # $1 = backbone|engram|draft
 
 { bash $V/build.sh > $R/llama.log 2>&1 && st "llama.cpp built" || st "llama.cpp build FAILED"; } &
 [ "$UNCENSOR" = 1 ] && { python3 -I $V/mkpatch.py /content/patch > $R/patch.log 2>&1 && st "uncensor patch fetched" || st "uncensor patch FAILED"; } &
-[ "$MMPROJ" = 1 ] && { MMPROJ_FETCH_ONLY=1 timeout 300 bash $V/serve.sh > $R/mmproj.log 2>&1 && st "image encoder fetched" || st "image encoder FAILED"; } &
+[ "$MMPROJ" = 1 ] && { MMPROJ_FETCH_ONLY=1 timeout 300 [ -f $V/libpin.so ] || gcc -shared -fPIC -O2 $V/pin.c -o $V/libpin.so -ldl -lpthread 2>/dev/null || true
+bash $V/serve.sh > $R/mmproj.log 2>&1 && st "image encoder fetched" || st "image encoder FAILED"; } &
 { fetch backbone && st "backbone fetched" || st "backbone FAILED"; } &
 [ "$DRAFT" = 1 ] && { fetch draft && sha256sum $M/dspark.gguf | grep -q "^$DRAFT_SHA" && st "draft fetched" || st "draft FAILED"; } &
 wait
@@ -80,6 +81,7 @@ python3 -I $V/checksizes.py /content/model > $R/sizes.txt 2>&1 && st "sizes ok" 
 if [ "$UNCENSOR" = 1 ]; then
   python3 -I $V/applypatch.py /content/model /content/patch >> $R/patch.log 2>&1 && st "uncensored tensors applied" || { st "patch apply FAILED"; exit 1; }
 fi
+[ -f $V/libpin.so ] || gcc -shared -fPIC -O2 $V/pin.c -o $V/libpin.so -ldl -lpthread 2>/dev/null || true
 bash $V/serve.sh
 st "server started"
 for k in $(seq 1 900); do
@@ -101,7 +103,7 @@ else
   if [ "$DRAFT" = 1 ] && [ "$(grep -c 'CUDA0 model buffer size' $R/buffers.txt)" -ge 2 ]; then
     python3 -I $V/punch.py 'NO_CPU_TENSOR=CPU' $M/dspark.gguf > $R/punch_draft.txt 2>&1 && st "draft punched $(cat $R/punch_draft.txt)"
   fi
-  if [ "$PIN_COLD" = 1 ]; then
+  if [ "$PIN_COLD" = 1 ] && [ -f "$V/libpin.so" ]; then
     python3 $V/punch.py --pin-cold $R/pin_request.tmp $R/resident.txt $PUNCH_FILES > $R/pin.txt 2>&1 && mv $R/pin_request.tmp $R/pin_request
     for k in $(seq 1 600); do grep -q DONE $R/pin_result 2>/dev/null && break; sleep 1; done
     st "pin: $(tail -1 $R/pin_result 2>/dev/null)"
